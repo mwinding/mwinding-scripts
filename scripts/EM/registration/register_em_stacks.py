@@ -22,14 +22,11 @@ Dependencies:
   - scipy
   - scikit-image
   - tifffile
-
-This is intentionally simple and robust:
-  - Only global translation per slice (no rotation, no non-linear warping).
-  - Local z-window templates to avoid cumulative drift.
 """
 
 import argparse
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, map_coordinates, gaussian_filter1d
@@ -50,7 +47,7 @@ def estimate_per_slice_shifts(
     window_radius: int = 3,
     blur_sigma: float = 1.0,
     upsample_factor: int = 10,
-    max_abs_shift: float | None = None,
+    max_abs_shift: Optional[float] = None,
 ) -> np.ndarray:
     """
     Estimate global XY translation per slice.
@@ -190,7 +187,7 @@ def process_roi_stack(
     window_radius: int,
     blur_sigma: float,
     upsample_factor: int,
-    max_abs_shift: float | None,
+    max_abs_shift: Optional[float],
     sigma_z: float,
 ):
     """
@@ -207,12 +204,14 @@ def process_roi_stack(
         upsample_factor=upsample_factor,
         max_abs_shift=max_abs_shift,
     )
-    print(f"  Raw shift stats (pixels): "
-          f"dy [{shifts[:,0].min():.2f}, {shifts[:,0].max():.2f}], "
-          f"dx [{shifts[:,1].min():.2f}, {shifts[:,1].max():.2f}]")
+    print(
+        f"  Raw shift stats (pixels): "
+        f"dy [{shifts[:, 0].min():.2f}, {shifts[:, 0].max():.2f}], "
+        f"dx [{shifts[:, 1].min():.2f}, {shifts[:, 1].max():.2f}]"
+    )
 
     shifts_smooth = smooth_shifts(shifts, sigma_z=sigma_z)
-    print(f"  Smoothed shifts (first 5 slices):")
+    print("  Smoothed shifts (first 5 slices):")
     for z in range(min(5, shifts_smooth.shape[0])):
         dy, dx = shifts_smooth[z]
         print(f"    z={z}: dy={dy:.3f}, dx={dx:.3f}")
@@ -265,8 +264,10 @@ def main():
         "--max-abs-shift",
         type=float,
         default=20.0,
-        help="Maximum allowed |shift| in pixels; larger values are zeroed (default: 20). "
-             "Set to 0 or negative to disable.",
+        help=(
+            "Maximum allowed |shift| in pixels; larger values are zeroed (default: 20). "
+            "Set to 0 or negative to disable."
+        ),
     )
     parser.add_argument(
         "--sigma-z",
@@ -287,9 +288,11 @@ def main():
 
     print(f"Found {len(roi_paths)} ROI stack(s) in {roi_dir}")
 
-    max_abs_shift = args.max_abs_shift
-    if max_abs_shift is not None and max_abs_shift <= 0:
+    max_abs_shift: Optional[float]
+    if args.max_abs_shift is not None and args.max_abs_shift <= 0:
         max_abs_shift = None
+    else:
+        max_abs_shift = args.max_abs_shift
 
     for in_path in roi_paths:
         # Preserve base name, add _aligned before extension
