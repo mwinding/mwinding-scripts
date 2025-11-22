@@ -6,8 +6,6 @@ CLAHE for huge EF-SEM BigTIFF volumes.
 - Applies 2D CLAHE slice-by-slice
 - Saves each processed slice as:
       output_dir/slice_XXXX.tif
-
-Much simpler and avoids any TIFF append or metadata issues.
 """
 
 import argparse
@@ -17,18 +15,11 @@ import tifffile
 from skimage import exposure
 
 
-# ============================================================
 # Fiji-equivalent CLAHE defaults
-# ============================================================
-
 DEFAULT_KERNEL = 127       # Fiji blocksize
 DEFAULT_NBINS  = 256       # Histogram bins
-DEFAULT_CLIP   = 3 / 256   # Fiji "maximum=3" → clip limit
+DEFAULT_CLIP   = 3 / 256   # Fiji "maximum=3"
 
-
-# ============================================================
-# CLAHE helper
-# ============================================================
 
 def apply_clahe(img, dtype, kernel, clip, nbins):
     """Apply 2D CLAHE to one slice."""
@@ -43,11 +34,8 @@ def apply_clahe(img, dtype, kernel, clip, nbins):
     return out
 
 
-# ============================================================
-# Main slice-writer
-# ============================================================
-
-def clahe_slices(input_path, output_dir, kernel, clip, nbins):
+def clahe_slices(input_path: Path, output_dir: Path,
+                 kernel: int, clip: float, nbins: int) -> None:
     print(f"Loading (memmap) volume from: {input_path}")
     vol = tifffile.imread(str(input_path), out="memmap")   # shape (Z, Y, X)
     dtype = vol.dtype
@@ -60,7 +48,6 @@ def clahe_slices(input_path, output_dir, kernel, clip, nbins):
 
     for z in range(Z):
         print(f"Slice {z+1}/{Z}")
-
         img = np.array(vol[z])        # materialise slice
         out = apply_clahe(img, dtype, kernel, clip, nbins)
 
@@ -70,17 +57,13 @@ def clahe_slices(input_path, output_dir, kernel, clip, nbins):
     print("Finished writing all slices.")
 
 
-# ============================================================
-# CLI
-# ============================================================
-
 def main():
     parser = argparse.ArgumentParser(
         description="CLAHE slice-by-slice for huge EF-SEM BigTIFF volumes."
     )
     parser.add_argument("-i", "--input", required=True, help="Input BigTIFF")
-    parser.add_argument("-d", "--output-dir", required=True, help="Output directory for slices")
-
+    parser.add_argument("-d", "--output-dir", required=True,
+                        help="Output directory for slices")
     parser.add_argument("--kernel", type=int, default=DEFAULT_KERNEL)
     parser.add_argument("--nbins",  type=int, default=DEFAULT_NBINS)
     parser.add_argument("--clip",   type=float, default=DEFAULT_CLIP)
