@@ -1,60 +1,52 @@
 #!/usr/bin/env python3
-
 """
-Crop small 3D stacks from CLAHE slices using Fiji ROI files.
+Crop small 3D stacks from CLAHE slices using a Fiji ROI CSV.
 
 Assumptions:
 - CLAHE output is a directory of 2D slices:
       slice_0000.tif, slice_0001.tif, ...
-- ROIs are saved from Fiji ROI Manager as .roi files (one per ROI),
-  or as multiple .roi files in a folder.
-- Each ROI defines an x–y rectangle, applied identically to all slices.
+- ROI CSV is like M09_D17_10MHz_3nA_8x8x8_20V_rois.csv with columns:
+      Name, X, Y, Width, Height, ...
+- Each ROI is a rectangle applied identically to all Z-slices.
 
 For each ROI, this script:
-- Reads the ROI
-- Uses its bounding box on every slice
-- Writes a cropped TIFF stack: one file per ROI
+- Reads (Name, X, Y, Width, Height)
+- Crops all slices
+- Writes one TIFF stack per ROI:  ROI_<Name>.tif
 """
 
 import argparse
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import tifffile
-from roifile import ImagejRoi  # pip install roifile
 
 
-def load_rois(roi_path: Path):
-    """
-    Return a list of (name, left, top, right, bottom) from .roi files.
+def load_rois_from_csv(csv_path: Path):
+    """Load ROIs from a Fiji ROI Manager CSV export."""
+    df = pd.read_csv(csv_path)
 
-    roi_path:
-      - if a single .roi file → just that ROI
-      - if a directory       → all *.roi files inside
-    """
-    if roi_path.is_file() and roi_path.suffix.lower() == ".roi":
-        roi_files = [roi_path]
-    elif roi_path.is_dir():
-        roi_files = sorted(roi_path.glob("*.roi"))
-    else:
-        raise ValueError(f"{roi_path} is neither a .roi file nor a directory of .roi files")
-
-    if not roi_files:
-        raise RuntimeError(f"No .roi files found in {roi_path}")
+    # Defensive: handle possible weird first column like ' '
+    # We only care about: Name, X, Y, Width, Height
+    required = ["Name", "X", "Y", "Width", "Height"]
+    for col in required:
+        if col not in df.columns:
+            raise ValueError(f"Required column '{col}' not found in CSV: {csv_path}")
 
     rois = []
-    for rf in roi_files:
-        r = ImagejRoi.fromfile(str(rf))
-        # ImageJ coordinates: left, top, right, bottom (pixels)
-        left, top, right, bottom = r.left, r.top, r.right, r.bottom
-        name = rf.stem
-        rois.append((name, left, top, right, bottom))
+    for _, row in df.iterrows():
+        name = str(row["Name"])
+        x = int(row["X"])
+        y = int(row["Y"])
+        w = int(row["Width"])
+        h = int(row["Height"])
+        rois.append((name, x, y, w, h))
     return rois
 
 
 def get_clahe_slices(clahe_dir: Path):
-    """Return a sorted list of CLAHE slice paths."""
-    # Adjust glob if your naming differs
+    """Return a sorted list of CLAHE slice paths (slice_*.tif)."""
     slices = sorted(clahe_dir.glob("slice_*.tif"))
     if not slices:
         raise RuntimeError(f"No slice_*.tif files found in {clahe_dir}")
@@ -66,20 +58,19 @@ def crop_stack_for_roi(slices, roi, out_dir: Path):
     Crop a 3D stack for a single ROI.
 
     slices: list of slice paths (sorted)
-    roi: (name, left, top, right, bottom)
+    roi: (name, x, y, w, h)
     out_dir: where to write the TIFF stack
     """
-    name, left, top, right, bottom = roi
+    name, x, y, w, h = roi
     out_path = out_dir / f"ROI_{name}.tif"
 
-    print(f"  ROI '{name}': x=[{left},{right}), y=[{top},{bottom}) → {out_path}")
+    print(f"  ROI '{name}': x=[{x},{x+w}), y=[{y},{y+h}) → {out_path}")
 
     cropped_slices = []
 
     for i, sp in enumerate(slices):
         img = tifffile.imread(str(sp))
-        # y = top:bottom, x = left:right
-        crop = img[top:bottom, left:right]
+        crop = img[y:y+h, x:x+w]   # y, then x
         cropped_slices.append(crop)
 
     vol = np.stack(cropped_slices, axis=0)  # (Z, Y, X)
@@ -89,15 +80,15 @@ def crop_stack_for_roi(slices, roi, out_dir: Path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Crop 3D stacks from CLAHE slices using Fiji .roi files."
+        description="Crop 3D stacks from CLAHE slices using a Fiji ROI CSV."
     )
     parser.add_argument(
         "-c", "--clahe-dir", required=True,
         help="Directory containing CLAHE slices (slice_XXXX.tif)",
     )
     parser.add_argument(
-        "-r", "--rois", required=True,
-        help="Single .roi file or directory containing .roi files",
+        "-r", "--roi-csv", required=True,
+        help="ROI CSV file exported from Fiji ROI Manager",
     )
     parser.add_argument(
         "-o", "--output-dir", required=True,
@@ -107,19 +98,19 @@ def main():
     args = parser.parse_args()
 
     clahe_dir = Path(args.clahe_dir)
-    roi_path = Path(args.rois)
+    csv_path = Path(args.roi_csv)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"CLAHE slices dir: {clahe_dir}")
-    print(f"ROI source:       {roi_path}")
+    print(f"ROI CSV:          {csv_path}")
     print(f"Output dir:       {out_dir}")
 
     slices = get_clahe_slices(clahe_dir)
     print(f"Found {len(slices)} slices")
 
-    rois = load_rois(roi_path)
-    print(f"Found {len(rois)} ROI(s)")
+    rois = load_rois_from_csv(csv_path)
+    print(f"Found {len(rois)} ROI(s) in CSV")
 
     for roi in rois:
         crop_stack_for_roi(slices, roi, out_dir)
