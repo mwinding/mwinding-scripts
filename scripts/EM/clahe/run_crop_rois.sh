@@ -41,7 +41,7 @@ source /camp/apps/eb/software/Anaconda/conda.env.sh
 
 # Use an env that has pandas + tifffile installed.
 # Either tifftest, or your sleap env if you've got those in there.
-conda activate tifftest
+conda activate /camp/lab/windingm/home/shared/conda-envs/sleap
 
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK}
