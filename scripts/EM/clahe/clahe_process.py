@@ -1,84 +1,83 @@
 #!/usr/bin/env python3
 """
-Apply CLAHE to huge TIFF stacks (>100 GB) using Fiji-equivalent parameters.
+CLAHE for huge BigTIFF EF-SEM volumes using tifffile's Zarr backend.
 
-Outputs either:
-  - a TIFF stack (-o tiff)
-  - a BDV HDF5 dataset (-o bdv)
-
-Runs slice-by-slice → tiny memory footprint.
+- Reads slices lazily: arr[z].compute()
+- Supports TIFF or BDV output
+- Uses Fiji-equivalent CLAHE defaults
 """
 
 import argparse
+from pathlib import Path
 import numpy as np
 import tifffile
 import h5py
 from skimage import exposure
-from pathlib import Path
 
 
 # ============================================================
-#                   USER-FACING DEFAULTS
+# Fiji-equivalent defaults
 # ============================================================
 
-# Fiji CLAHE defaults:
-#   blocksize = 127 → kernel size
-#   histogram = 256 → nbins
-#   maximum   = 3   → clip limit = 3/256
-DEFAULT_KERNEL = 127
-DEFAULT_NBINS = 256
-DEFAULT_CLIP = 3 / 256
-
-# BDV chunk size (good for large EM volumes)
+DEFAULT_KERNEL = 127      # blocksize=127
+DEFAULT_NBINS = 256       # histogram=256
+DEFAULT_CLIP = 3 / 256    # maximum=3
 BDV_CHUNKS = (1, 512, 512)
 
 
 # ============================================================
-#                   CORE PROCESSING FUNCTIONS
+# CLAHE processing
 # ============================================================
 
-def apply_clahe(img, dtype, kernel_size, clip_limit, nbins):
-    """CLAHE matched to Fiji settings."""
+def apply_clahe(img, dtype, kernel, clip, nbins):
+    """Apply CLAHE with Fiji-matching parameters."""
     out = exposure.equalize_adapthist(
         img,
-        kernel_size=kernel_size,
-        clip_limit=clip_limit,
+        kernel_size=kernel,
+        clip_limit=clip,
         nbins=nbins
     )
-
-    # Convert back to original integer range (e.g. uint16)
     if np.issubdtype(dtype, np.integer):
         out = (out * np.iinfo(dtype).max).astype(dtype)
-
     return out
 
 
-def clahe_to_tiff(input_path, output_path, kernel_size, clip_limit, nbins):
-    """Write CLAHE-processed TIFF volume."""
+# ============================================================
+# TIFF output
+# ============================================================
+
+def clahe_to_tiff(input_path, output_path, kernel, clip, nbins):
     with tifffile.TiffFile(input_path) as tif:
 
-        n = len(tif.pages)
-        dtype = tif.pages[0].asarray().dtype
+        series = tif.series[0]
+        arr = series.aszarr()          # Zarr-backed access
+        dtype = series.dtype
+        shape = series.shape           # (Z, Y, X)
+        Z = shape[0]
 
-        print(f"Processing {n} slices → TIFF")
+        print(f"BigTIFF detected: shape={shape}, dtype={dtype}")
+        print(f"Writing TIFF to {output_path}")
 
-        # First slice → create output file
-        img = tif.pages[0].asarray()
-        out = apply_clahe(img, dtype, kernel_size, clip_limit, nbins)
+        # First slice
+        img = arr[0].compute()
+        out = apply_clahe(img, dtype, kernel, clip, nbins)
         tifffile.imwrite(output_path, out, imagej=True)
 
-        # Append remaining slices
-        for i in range(1, n):
-            print(f"Slice {i+1}/{n}")
-            img = tif.pages[i].asarray()
-            out = apply_clahe(img, dtype, kernel_size, clip_limit, nbins)
+        # Remaining slices
+        for z in range(1, Z):
+            print(f"Slice {z+1}/{Z}")
+            img = arr[z].compute()
+            out = apply_clahe(img, dtype, kernel, clip, nbins)
             tifffile.imwrite(output_path, out, append=True)
 
-    print(f"Finished: {output_path}")
+    print("TIFF CLAHE complete.")
 
 
-def clahe_to_bdv(input_path, bdv_dir, kernel_size, clip_limit, nbins):
-    """Write CLAHE-processed BDV (XML + HDF5)."""
+# ============================================================
+# BDV output
+# ============================================================
+
+def clahe_to_bdv(input_path, bdv_dir, kernel, clip, nbins):
 
     bdv_dir.mkdir(parents=True, exist_ok=True)
     xml_path = bdv_dir / "dataset.xml"
@@ -86,14 +85,15 @@ def clahe_to_bdv(input_path, bdv_dir, kernel_size, clip_limit, nbins):
 
     with tifffile.TiffFile(input_path) as tif, h5py.File(h5_path, "w") as h5:
 
-        n = len(tif.pages)
-        first = tif.pages[0].asarray()
-        dtype = first.dtype
-        shape = (n, first.shape[0], first.shape[1])
+        series = tif.series[0]
+        arr = series.aszarr()
+        dtype = series.dtype
+        shape = series.shape     # (Z, Y, X)
+        Z, Y, X = shape
 
-        print(f"Processing {n} slices → BDV ({shape})")
+        print(f"BigTIFF detected: shape={shape}, dtype={dtype}")
+        print(f"Writing BDV dataset to {bdv_dir}")
 
-        # Create BDV dataset
         ds = h5.create_dataset(
             "s0",
             shape=shape,
@@ -103,12 +103,12 @@ def clahe_to_bdv(input_path, bdv_dir, kernel_size, clip_limit, nbins):
             compression_opts=1
         )
 
-        # Fill dataset slice by slice
-        for i in range(n):
-            print(f"Slice {i+1}/{n}")
-            img = tif.pages[i].asarray()
-            out = apply_clahe(img, dtype, kernel_size, clip_limit, nbins)
-            ds[i] = out
+        # Process each slice
+        for z in range(Z):
+            print(f"Slice {z+1}/{Z}")
+            img = arr[z].compute()
+            out = apply_clahe(img, dtype, kernel, clip, nbins)
+            ds[z] = out
 
     # Minimal BDV XML
     xml = f"""
@@ -137,32 +137,26 @@ def clahe_to_bdv(input_path, bdv_dir, kernel_size, clip_limit, nbins):
 </SpimData>
 """
     xml_path.write_text(xml)
-    print(f"Finished BDV export: {bdv_dir}")
+    print("BDV CLAHE complete.")
 
 
 # ============================================================
-#                           MAIN
+# Main CLI
 # ============================================================
 
 def main():
-
-    # ----------------- CLI -----------------
-    parser = argparse.ArgumentParser(
-        description="CLAHE processing for huge TIFF stacks (>100 GB)"
-    )
-
-    parser.add_argument("-i", "--input", required=True, help="Input TIFF stack")
+    parser = argparse.ArgumentParser(description="CLAHE over huge BigTIFF stacks via Zarr backend.")
+    parser.add_argument("-i", "--input", required=True, help="Input BigTIFF")
     parser.add_argument("-d", "--output-dir", required=True, help="Output directory")
-    parser.add_argument("-o", "--output-format", required=True,
-                        choices=["tiff", "bdv"],
-                        help="Output type: tiff or bdv")
+    parser.add_argument("-o", "--output-format", required=True, choices=["tiff", "bdv"],
+                        help="Output format: tiff | bdv")
 
     parser.add_argument("--kernel", type=int, default=DEFAULT_KERNEL,
                         help="CLAHE kernel size (Fiji blocksize=127)")
     parser.add_argument("--nbins", type=int, default=DEFAULT_NBINS,
                         help="Histogram bins (Fiji histogram=256)")
     parser.add_argument("--clip", type=float, default=DEFAULT_CLIP,
-                        help="Clip limit (Fiji maximum=3 → clip=3/256≈0.0117)")
+                        help="Clip limit (Fiji maximum=3 → 3/256 ≈ 0.0117)")
 
     args = parser.parse_args()
 
@@ -170,14 +164,12 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
 
-    # ----------------- RUN -----------------
     if args.output_format == "tiff":
-        out_path = output_dir / f"CLAHE_{input_path.name}"
-        clahe_to_tiff(input_path, out_path, args.kernel, args.clip, args.nbins)
-
-    else:  # BDV
-        bdv_dir = output_dir / "CLAHE_BDV"
-        clahe_to_bdv(input_path, bdv_dir, args.kernel, args.clip, args.nbins)
+        out_tif = output_dir / f"CLAHE_{input_path.name}"
+        clahe_to_tiff(input_path, out_tif, args.kernel, args.clip, args.nbins)
+    else:
+        clahe_to_bdv(input_path, output_dir / "CLAHE_BDV",
+                     args.kernel, args.clip, args.nbins)
 
 
 if __name__ == "__main__":
