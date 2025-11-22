@@ -51,7 +51,7 @@ def main():
 #SBATCH --cpus-per-task=8
 #SBATCH --time=48:00:00
 #SBATCH --mem=120G
-#SBATCH --partition=cpu   # <-- change to your real partition if needed
+#SBATCH --partition=ncpu   # <-- change to your real partition if needed
 #SBATCH --array=0-{num_jobs-1}
 #SBATCH --output=slurm-clahe-%A_%a.out
 #SBATCH --mail-user=$(whoami)@crick.ac.uk
