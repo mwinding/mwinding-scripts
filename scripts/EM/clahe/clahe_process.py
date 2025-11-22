@@ -2,9 +2,10 @@
 """
 CLAHE for huge BigTIFF EF-SEM volumes using tifffile's Zarr backend.
 
-- Reads slices lazily: arr[z].compute()
+- Reads slices lazily: arr[z, :, :]
 - Supports TIFF or BDV output
-- Uses Fiji-equivalent CLAHE defaults
+- Uses Fiji-equivalent CLAHE defaults:
+    blocksize=127, histogram=256, maximum=3
 """
 
 import argparse
@@ -19,9 +20,15 @@ from skimage import exposure
 # Fiji-equivalent defaults
 # ============================================================
 
-DEFAULT_KERNEL = 127      # blocksize=127
-DEFAULT_NBINS = 256       # histogram=256
-DEFAULT_CLIP = 3 / 256    # maximum=3
+# Fiji CLAHE:
+#   blocksize = 127  → kernel size
+#   histogram = 256  → nbins
+#   maximum   = 3    → clip limit = 3/256
+DEFAULT_KERNEL = 127
+DEFAULT_NBINS = 256
+DEFAULT_CLIP = 3 / 256
+
+# BDV chunk size (good for large EM volumes)
 BDV_CHUNKS = (1, 512, 512)
 
 
@@ -37,8 +44,11 @@ def apply_clahe(img, dtype, kernel, clip, nbins):
         clip_limit=clip,
         nbins=nbins
     )
+
+    # Convert back to original integer range (e.g. uint16)
     if np.issubdtype(dtype, np.integer):
         out = (out * np.iinfo(dtype).max).astype(dtype)
+
     return out
 
 
@@ -47,10 +57,11 @@ def apply_clahe(img, dtype, kernel, clip, nbins):
 # ============================================================
 
 def clahe_to_tiff(input_path, output_path, kernel, clip, nbins):
+    """Apply CLAHE slice-by-slice and write a TIFF stack."""
     with tifffile.TiffFile(input_path) as tif:
 
         series = tif.series[0]
-        arr = series.aszarr()          # Zarr-backed access
+        arr = series.aszarr()          # Zarr-backed access (lazy)
         dtype = series.dtype
         shape = series.shape           # (Z, Y, X)
         Z = shape[0]
@@ -58,15 +69,15 @@ def clahe_to_tiff(input_path, output_path, kernel, clip, nbins):
         print(f"BigTIFF detected: shape={shape}, dtype={dtype}")
         print(f"Writing TIFF to {output_path}")
 
-        # First slice
-        img = arr[0].compute()
+        # First slice → create output file
+        img = arr[0, :, :]
         out = apply_clahe(img, dtype, kernel, clip, nbins)
         tifffile.imwrite(output_path, out, imagej=True)
 
-        # Remaining slices
+        # Remaining slices → append
         for z in range(1, Z):
             print(f"Slice {z+1}/{Z}")
-            img = arr[z].compute()
+            img = arr[z, :, :]
             out = apply_clahe(img, dtype, kernel, clip, nbins)
             tifffile.imwrite(output_path, out, append=True)
 
@@ -78,6 +89,7 @@ def clahe_to_tiff(input_path, output_path, kernel, clip, nbins):
 # ============================================================
 
 def clahe_to_bdv(input_path, bdv_dir, kernel, clip, nbins):
+    """Apply CLAHE slice-by-slice and write BDV (XML + HDF5)."""
 
     bdv_dir.mkdir(parents=True, exist_ok=True)
     xml_path = bdv_dir / "dataset.xml"
@@ -88,12 +100,13 @@ def clahe_to_bdv(input_path, bdv_dir, kernel, clip, nbins):
         series = tif.series[0]
         arr = series.aszarr()
         dtype = series.dtype
-        shape = series.shape     # (Z, Y, X)
+        shape = series.shape           # (Z, Y, X)
         Z, Y, X = shape
 
         print(f"BigTIFF detected: shape={shape}, dtype={dtype}")
         print(f"Writing BDV dataset to {bdv_dir}")
 
+        # Create BDV dataset (single mipmap level s0)
         ds = h5.create_dataset(
             "s0",
             shape=shape,
@@ -106,11 +119,11 @@ def clahe_to_bdv(input_path, bdv_dir, kernel, clip, nbins):
         # Process each slice
         for z in range(Z):
             print(f"Slice {z+1}/{Z}")
-            img = arr[z].compute()
+            img = arr[z, :, :]
             out = apply_clahe(img, dtype, kernel, clip, nbins)
             ds[z] = out
 
-    # Minimal BDV XML
+    # Minimal BDV XML descriptor
     xml = f"""
 <SpimData version="0.2">
   <BasePath type="relative">.</BasePath>
@@ -145,18 +158,36 @@ def clahe_to_bdv(input_path, bdv_dir, kernel, clip, nbins):
 # ============================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="CLAHE over huge BigTIFF stacks via Zarr backend.")
+    parser = argparse.ArgumentParser(
+        description="CLAHE over huge BigTIFF stacks via tifffile's Zarr backend."
+    )
     parser.add_argument("-i", "--input", required=True, help="Input BigTIFF")
     parser.add_argument("-d", "--output-dir", required=True, help="Output directory")
-    parser.add_argument("-o", "--output-format", required=True, choices=["tiff", "bdv"],
-                        help="Output format: tiff | bdv")
+    parser.add_argument(
+        "-o", "--output-format",
+        required=True,
+        choices=["tiff", "bdv"],
+        help="Output format: tiff | bdv"
+    )
 
-    parser.add_argument("--kernel", type=int, default=DEFAULT_KERNEL,
-                        help="CLAHE kernel size (Fiji blocksize=127)")
-    parser.add_argument("--nbins", type=int, default=DEFAULT_NBINS,
-                        help="Histogram bins (Fiji histogram=256)")
-    parser.add_argument("--clip", type=float, default=DEFAULT_CLIP,
-                        help="Clip limit (Fiji maximum=3 → 3/256 ≈ 0.0117)")
+    parser.add_argument(
+        "--kernel",
+        type=int,
+        default=DEFAULT_KERNEL,
+        help="CLAHE kernel size (Fiji blocksize=127)"
+    )
+    parser.add_argument(
+        "--nbins",
+        type=int,
+        default=DEFAULT_NBINS,
+        help="Histogram bins (Fiji histogram=256)"
+    )
+    parser.add_argument(
+        "--clip",
+        type=float,
+        default=DEFAULT_CLIP,
+        help="Clip limit (Fiji maximum=3 → 3/256 ≈ 0.0117)"
+    )
 
     args = parser.parse_args()
 
@@ -168,8 +199,8 @@ def main():
         out_tif = output_dir / f"CLAHE_{input_path.name}"
         clahe_to_tiff(input_path, out_tif, args.kernel, args.clip, args.nbins)
     else:
-        clahe_to_bdv(input_path, output_dir / "CLAHE_BDV",
-                     args.kernel, args.clip, args.nbins)
+        bdv_subdir = output_dir / "CLAHE_BDV"
+        clahe_to_bdv(input_path, bdv_subdir, args.kernel, args.clip, args.nbins)
 
 
 if __name__ == "__main__":
