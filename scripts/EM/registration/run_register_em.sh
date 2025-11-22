@@ -40,7 +40,7 @@ conda activate /camp/lab/windingm/home/shared/conda-envs/sleap
 # -----------------------------
 # Run jitter correction
 # -----------------------------
-srun python jitter_correct_roi_stacks.py \
+srun python register_em_stacks.py \
     --roi-dir "$ROI_DIR" \
     --output-dir "$OUTPUT_DIR" \
     --pattern "$PATTERN" \
