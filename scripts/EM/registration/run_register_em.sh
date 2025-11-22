@@ -32,8 +32,10 @@ echo "-------------------------------------"
 # -----------------------------
 # Activate environment
 # -----------------------------
-source ~/.bashrc
-conda activate fibsem   # change to your env name
+ml purge
+ml Anaconda3/2024.10
+source /camp/apps/eb/software/Anaconda/conda.env.sh
+conda activate /camp/lab/windingm/home/shared/conda-envs/sleap
 
 # -----------------------------
 # Run jitter correction
