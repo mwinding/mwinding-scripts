@@ -14,7 +14,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --time=12:00:00
 #SBATCH --mem=32G
-#SBATCH --partition=a100              # or whatever CPU/GPU partition you know works
+#SBATCH --partition=ga100              # or whatever CPU/GPU partition you know works
 #SBATCH --output=slurm-cropcsv-%j.out
 #SBATCH --mail-user=$(whoami)@crick.ac.uk
 #SBATCH --mail-type=FAIL
