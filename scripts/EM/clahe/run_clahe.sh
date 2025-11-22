@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --time=48:00:00
 #SBATCH --mem=200G
-#SBATCH --partition=cpu
+#SBATCH --partition=ncpu
 #SBATCH --output=slurm-%j.out
 #SBATCH --mail-user=$(whoami)@crick.ac.uk
 #SBATCH --mail-type=FAIL
