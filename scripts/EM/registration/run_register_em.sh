@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=register-em
-#SBATCH --output=register-em_%j.out
-#SBATCH --error=register-em_%j.err
+#SBATCH --output=slurm-register-em_%j.out
 #SBATCH --time=12:00:00
 #SBATCH --partition=ncpu
 #SBATCH --nodes=1
