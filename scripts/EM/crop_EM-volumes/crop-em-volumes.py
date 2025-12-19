@@ -51,6 +51,12 @@ def clamp_roi(x, y, w, h, X, Y):
     return x0, y0, x1, y1
 
 
+def safe_name(name: str) -> str:
+    """Make ROI names filesystem-safe."""
+    return "".join(c if c.isalnum() or c in "._-"
+                   else "_" for c in (name or ""))
+
+
 def crop_stack_for_roi(vol, roi, out_dir: Path, z_start: int, z_end: int):
     """
     Crop a 3D stack for a single ROI from a memmapped volume.
@@ -67,7 +73,7 @@ def crop_stack_for_roi(vol, roi, out_dir: Path, z_start: int, z_end: int):
         print(f"  ROI '{name}': empty after clamping to bounds, skipping.")
         return
 
-    out_path = out_dir / f"ROI_{name}.tif"
+    out_path = out_dir / f"ROI_{safe_name(name)}.tif"
     print(
         f"  ROI '{name}': x=[{x0},{x1}), y=[{y0},{y1}), z=[{z_start},{z_end}] → {out_path}"
     )

@@ -19,7 +19,7 @@
 #SBATCH --mem=400G
 #SBATCH --partition=ga100
 #SBATCH --output=slurm-cropstack-%j.out
-#SBATCH --mail-user=$(whoami)@crick.ac.uk
+#SBATCH --mail-user=${USER}@crick.ac.uk
 #SBATCH --mail-type=FAIL
 
 INPUT_TIFF="$1"
@@ -55,7 +55,7 @@ export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export NUMEXPR_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 
-CMD=(python3 run_crop-em.py \
+CMD=(python3 crop-em-volumes.py \
     -i "$INPUT_TIFF" \
     -r "$ROI_CSV" \
     -o "$OUTPUT_DIR")
