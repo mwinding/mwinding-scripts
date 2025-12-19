@@ -1,5 +1,7 @@
 # ignore data folder
 data
+projections_Gjpg
+*.csv
 
 # ignore DS_Store
 .DS_Store
