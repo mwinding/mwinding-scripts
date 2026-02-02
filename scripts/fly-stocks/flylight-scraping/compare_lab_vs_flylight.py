@@ -53,6 +53,18 @@ def infer_split_from_basename(basename: str) -> str:
     m = re.search(r"(MB\d+[A-Z]?|SS\d+)", basename)
     return m.group(1) if m else ""
 
+_SPLIT_FROM_UPLOADDIR = re.compile(r"lmbjanupload-([A-Za-z0-9]+)-Y")
+
+
+def infer_split_from_folder(folder: str) -> str:
+    """
+    Folder examples:
+      lmbjanupload-MB054B-Y
+      lmbjanupload-SS00671-Y
+    """
+    m = _SPLIT_FROM_UPLOADDIR.search(folder or "")
+    return m.group(1) if m else ""
+
 
 class FlylightSplitsHTMLParser(HTMLParser):
     """
@@ -107,6 +119,8 @@ def scrape_projection_records(page_html: str, base_url: str) -> list[dict[str, s
         seen.add(key)
 
         split = infer_split_from_basename(basename)
+        if not split:
+            split = infer_split_from_folder(folder)
         if not split:
             # keep it, but mark split empty so it won't match lab IDs
             split = ""

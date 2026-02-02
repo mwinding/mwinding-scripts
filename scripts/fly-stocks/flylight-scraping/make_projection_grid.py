@@ -3,7 +3,7 @@
 '''
 To run:
 PYTHONNOUSERSITE=1 python make_projection_grid.py \
-  --csv brain_vnc_per_image.csv \
+  --csv flylight-splits_not-in-lab_brain-vnc_per-image.csv \
   --out data/grid.png
 
 '''

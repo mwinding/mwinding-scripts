@@ -4,8 +4,8 @@ To run:
 PYTHONNOUSERSITE=1 python download-classify_flylight-splits.py \
   --in_csv flylight_splits_not_in_lab.csv \
   --download_dir projections_Gjpg \
-  --out_per_image brain_vnc_per_image.csv \
-  --out_by_split brain_vnc_by_split.csv \
+  --out_per_image flylight-splits_not-in-lab_brain-vnc_per-image.csv \
+  --out_by_split flylight-splits_not-in-lab_brain-vnc_by-split.csv \
   --out_annotated flylight_splits_not_in_lab_with_expression.csv
 """
 
@@ -231,12 +231,14 @@ def main() -> None:
     ap.add_argument("--frac95_thr", type=float, default=0.001,
                     help="Threshold on fraction of pixels >= 0.95 (in [0,1]) to call sparse bright signal present.")
 
-    ap.add_argument("--out_per_image", default="brain_vnc_per_image.csv",
+    ap.add_argument("--out_per_image", default="flylight-splits_not-in-lab_brain-vnc_per-image.csv",
                     help="Output per-image classification CSV.")
-    ap.add_argument("--out_by_split", default="brain_vnc_by_split.csv",
+    ap.add_argument("--out_by_split", default="flylight-splits_not-in-lab_brain-vnc_by-split.csv",
                     help="Output collapsed per-split classification CSV.")
     ap.add_argument("--out_annotated", default="flylight_splits_not_in_lab_with_expression.csv",
                     help="Output annotated version of --in_csv (adds split-level classification columns).")
+    ap.add_argument("--cleanup_annotated", action="store_true",
+                    help="Delete the annotated CSV after writing it.")
     args = ap.parse_args()
 
     in_path = Path(args.in_csv)
@@ -485,6 +487,12 @@ def main() -> None:
     print(f"Wrote: {args.out_annotated}  (annotated input rows={len(annotated_rows)})")
     if download_failures:
         print(f"WARNING: download/URL failures: {download_failures}")
+    if args.cleanup_annotated:
+        try:
+            Path(args.out_annotated).unlink()
+            print(f"Deleted: {args.out_annotated}")
+        except FileNotFoundError:
+            print(f"Cleanup skipped; not found: {args.out_annotated}")
 
 
 if __name__ == "__main__":
