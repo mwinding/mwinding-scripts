@@ -289,3 +289,31 @@ if len(results) >= 2:
     combined_counts_png = ROOT / "data" / "sideview_data" / "proofreading" / "cluster_fraction_recluster_GH_vs_SI_with_counts.png"
     plt.savefig(combined_counts_png, dpi=160)
     print("Saved combined plot with counts to:", combined_counts_png)
+
+    # Per-sample bar plot (GH + SI, each sample as its own bar)
+    fig3, ax3 = plt.subplots(figsize=(10, 4.5))
+    gh_labels = [gh["label_map"].get(t, str(t)) for t in gh["summary"]["track_id"].astype(int).tolist()]
+    si_labels = [si["label_map"].get(t, str(t)) for t in si["summary"]["track_id"].astype(int).tolist()]
+    labels = [f"GH_{lab}" for lab in gh_labels] + [f"SI_{lab}" for lab in si_labels]
+    vals = list(gh["summary"]["clustered_fraction"].to_numpy()) + list(si["summary"]["clustered_fraction"].to_numpy())
+    colors = ["#4a90e2"] * len(gh_labels) + ["#f5a623"] * len(si_labels)
+    bars = ax3.bar(range(len(labels)), vals, color=colors)
+    for bar, total in zip(bars, list(gh["summary"]["total_frames"].astype(int)) + list(si["summary"]["total_frames"].astype(int))):
+        ax3.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.02,
+            f"{total}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
+    ax3.set_ylim(0, 1.15)
+    ax3.set_xticks(range(len(labels)))
+    ax3.set_xticklabels(labels, rotation=30, ha="right")
+    ax3.set_ylabel("Fraction of frames in cluster (non -1)")
+    ax3.set_title("Reclustered manual tracks (per sample)")
+    ax3.axvline(len(gh_labels) - 0.5, color="#666666", linewidth=1, alpha=0.6)
+    plt.tight_layout()
+    per_sample_png = ROOT / "data" / "sideview_data" / "proofreading" / "cluster_fraction_recluster_per_sample.png"
+    plt.savefig(per_sample_png, dpi=160)
+    print("Saved per-sample plot to:", per_sample_png)
