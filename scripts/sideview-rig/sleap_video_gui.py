@@ -702,7 +702,12 @@ class SleapVideoGUI:
         )
         if not path:
             return
-        df = pd.DataFrame(self.manual_track)
+        save_records = []
+        for order_idx, rec in enumerate(self.manual_track):
+            out = dict(rec)
+            out.setdefault("order", order_idx)
+            save_records.append(out)
+        df = pd.DataFrame(save_records)
         df.to_csv(path, index=False)
         messagebox.showinfo("Saved", f"Saved {len(df)} points to:\\n{path}")
 
@@ -725,7 +730,7 @@ class SleapVideoGUI:
 
         records = []
         frames_needing = set()
-        for _, row in df.iterrows():
+        for order_idx, (_, row) in enumerate(df.iterrows()):
             frame = int(row["frame"])
             x = float(row["x"])
             y = float(row["y"])
@@ -737,6 +742,7 @@ class SleapVideoGUI:
             if inst_id is None and self.df is not None:
                 frames_needing.add(frame)
 
+            csv_order = int(row["order"]) if "order" in df.columns and not pd.isna(row["order"]) else order_idx
             records.append({
                 "frame": frame,
                 "x": x,
@@ -745,6 +751,7 @@ class SleapVideoGUI:
                 "instance_id": inst_id,
                 "track_id": track_id,
                 "source": source,
+                "order": csv_order,
             })
 
         if frames_needing and self.df is not None:
@@ -790,8 +797,7 @@ class SleapVideoGUI:
         self.root.after(10, lambda: self._finish_load_manual_csv(new_track, path))
 
     def _finish_load_manual_csv(self, new_track, path):
-        self.manual_track = new_track
-        self.manual_track.sort(key=lambda r: r["frame"])
+        self.manual_track = list(new_track)
         self._mark_timeline_dirty()
         def done():
             self._render()
@@ -817,7 +823,7 @@ class SleapVideoGUI:
 
         records = []
         frames_needing = set()
-        for _, row in df.iterrows():
+        for order_idx, (_, row) in enumerate(df.iterrows()):
             frame = int(row["frame"])
             x = float(row["x"])
             y = float(row["y"])
@@ -828,6 +834,7 @@ class SleapVideoGUI:
             if inst_id is None and self.df is not None:
                 frames_needing.add(frame)
 
+            csv_order = int(row["order"]) if "order" in df.columns and not pd.isna(row["order"]) else order_idx
             records.append({
                 "frame": frame,
                 "x": x,
@@ -836,6 +843,7 @@ class SleapVideoGUI:
                 "instance_id": inst_id,
                 "track_id": track_id,
                 "source": "warmstart",
+                "order": csv_order,
             })
 
         if frames_needing and self.df is not None:
@@ -1583,7 +1591,7 @@ class SleapVideoGUI:
                 on_done()
             return
 
-        ordered = sorted(records, key=lambda r: (r["frame"], int(r.get("track_id", 0))))
+        ordered = sorted(records, key=lambda r: (int(r.get("order", 10**12)), int(r.get("track_id", 0))))
         self._rebuild_state = {
             "records": ordered,
             "idx": 0,
