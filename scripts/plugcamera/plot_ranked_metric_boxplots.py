@@ -42,6 +42,7 @@ DEFAULT_DATA_DIR = ROOT / "data" / "plugcamera_data"
 DEFAULT_OUT_DIR = DEFAULT_DATA_DIR / "plots"
 DEFAULT_SPLIT_ANNOTATION_CSV = DEFAULT_DATA_DIR / "student_screenshot_annotations.csv"
 DEFAULT_SENSORY_STOCKS_CSV = DEFAULT_DATA_DIR / "stocks-sensory-screen.csv"
+DEFAULT_MECHANO_LOOKUP_CSV = DEFAULT_DATA_DIR / "mechano-lines-full-list.csv"
 CONTROL_COLOR = "#8f8f8f"
 NS_COLOR = "#d8d8d8"
 UP_COLOR = "#4c72b0"
@@ -50,9 +51,9 @@ UP_TREND_COLOR = "#9eb6dc"
 DOWN_TREND_COLOR = "#de9fa5"
 WIDTH_PER_CONDITION = 0.145
 MIN_PANEL_WIDTH = 8.0
-PER_HIT_COL_WIDTH = 2.45
+PER_HIT_COL_WIDTH = 1.3
 PER_HIT_ROW_HEIGHT = 2.4
-MIN_PER_HIT_WIDTH = 10.5
+MIN_PER_HIT_WIDTH = 6.5
 MIN_PER_HIT_HEIGHT = 4.8
 
 
@@ -80,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--screen",
-        choices=("both", "sensory", "split"),
+        choices=("both", "sensory", "split", "mechano-gal4", "mechano-split"),
         default="both",
         help="Which screen(s) to plot (default: both).",
     )
@@ -187,6 +188,11 @@ def parse_args() -> argparse.Namespace:
         help="Optional sensory stock table CSV. Default: data/plugcamera_data/stocks-sensory-screen.csv (or data/plugcamera-data fallback).",
     )
     parser.add_argument(
+        "--sensory-group-sort",
+        action="store_true",
+        help="For sensory plots, cluster conditions into broad modality groups while preserving within-group rank order as much as possible.",
+    )
+    parser.add_argument(
         "--composite-residuals",
         action="store_true",
         help="Also write a composite figure with the three residual metrics stacked and a shared condition order.",
@@ -221,7 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--per-hit-composites",
         action="store_true",
-        help="Write one 3-metric boxplot figure per significant hit (Number of Holes, Hole Size, Lifetime).",
+        help="Write one 3-metric boxplot figure per significant hit (Hole Count, Hole Size, Hole persistence).",
     )
     parser.add_argument(
         "--per-hit-source-metric",
@@ -281,9 +287,9 @@ def resolve_metric_column(df: pd.DataFrame, metric: str, use_residual: bool) -> 
 def y_axis_label(metric_col: str, value_scale: str) -> str:
     metric_key = metric_col.replace("_residual", "")
     pretty = {
-        "total_holes": "Number of Holes",
+        "total_holes": "Hole Count",
         "avg_max_size": "Hole Size",
-        "avg_lifetime": "Lifetime",
+        "avg_lifetime": "Hole Persistence",
     }.get(metric_key, metric_key.replace("_", " ").title())
     if value_scale == "control-sd":
         return f"{pretty} (Relative Effect)"
@@ -295,9 +301,9 @@ def y_axis_label(metric_col: str, value_scale: str) -> str:
 def metric_pretty_name(metric_col: str) -> str:
     metric_key = metric_col.replace("_residual", "")
     return {
-        "total_holes": "Number of Holes",
+        "total_holes": "Hole Count",
         "avg_max_size": "Hole Size",
-        "avg_lifetime": "Lifetime",
+        "avg_lifetime": "Hole Persistence",
     }.get(metric_key, metric_key.replace("_", " ").title())
 
 
@@ -362,6 +368,25 @@ def is_valid_student_annotation(text: str) -> bool:
     return not any(p in low for p in junk_phrases)
 
 
+def compact_split_annotation(text: str) -> str:
+    plus_parts = [part.strip() for part in text.split(" + ")]
+    plus_match = [re.match(r"^([A-Za-z0-9]+)-(.+)$", part) for part in plus_parts]
+    if len(plus_parts) > 1 and all(match is not None for match in plus_match):
+        families = [match.group(1) for match in plus_match if match is not None]
+        suffixes = [match.group(2) for match in plus_match if match is not None]
+        if len(set(families)) == 1:
+            text = f"{families[0]}-{suffixes[0]}/" + "/".join(suffixes[1:])
+
+    slash_parts = [part.strip() for part in text.split("/")]
+    slash_match = [re.match(r"^([A-Za-z0-9]+)-(.+)$", part) for part in slash_parts]
+    if len(slash_parts) > 1 and all(match is not None for match in slash_match):
+        families = [match.group(1) for match in slash_match if match is not None]
+        suffixes = [match.group(2) for match in slash_match if match is not None]
+        if len(set(families)) == 1:
+            text = f"{families[0]}-{suffixes[0]}/" + "/".join(suffixes[1:])
+    return text
+
+
 def load_split_annotation_map() -> dict[str, str]:
     # Intentionally trust only the student-provided annotation table.
     mapping: dict[str, str] = {}
@@ -370,17 +395,94 @@ def load_split_annotation_map() -> dict[str, str]:
         if {"split_id", "annotation"}.issubset(df.columns):
             for _, row in df.iterrows():
                 sid = clean_text(row.get("split_id", "")).upper()
-                ann = clean_text(row.get("annotation", ""))
+                ann = compact_split_annotation(clean_text(row.get("annotation", "")))
                 if sid and ann and is_valid_student_annotation(ann) and sid not in mapping:
                     mapping[sid] = ann
     return mapping
 
 
-def display_label(cond: str, annotation_map: dict[str, str], annotation_only: bool = False) -> str:
+def is_usable_mechano_label(text: object) -> bool:
+    value = clean_text(text)
+    if not value:
+        return False
+    low = value.lower()
+    if low.startswith("http"):
+        return False
+    if re.fullmatch(r"\d+", value):
+        return False
+    if re.fullmatch(r"(ss\d+|mb\d+[a-z]?)", value, re.I):
+        return False
+    return True
+
+
+def load_mechano_annotation_maps() -> tuple[dict[str, str], dict[str, str]]:
+    split_map: dict[str, str] = {}
+    gal4_map: dict[str, str] = {}
+    if not DEFAULT_MECHANO_LOOKUP_CSV.exists():
+        return split_map, gal4_map
+    df = pd.read_csv(DEFAULT_MECHANO_LOOKUP_CSV, dtype=str, encoding="utf-8-sig").fillna("")
+    if {"ID", "neuron_name"}.issubset(df.columns):
+        for _, row in df.iterrows():
+            key = clean_text(row.get("ID", "")).upper()
+            label = clean_text(row.get("neuron_name", ""))
+            if not key or not is_usable_mechano_label(label):
+                continue
+            if re.fullmatch(r"(SS\d+|MB\d+[A-Z]?)", key, re.I):
+                if key not in split_map:
+                    split_map[key] = compact_split_annotation(label)
+            else:
+                if key not in gal4_map:
+                    gal4_map[key] = label
+        return split_map, gal4_map
+    for _, row in df.iterrows():
+        split_keys = [clean_text(row.get("Split ID", "")).upper(), clean_text(row.get("Unnamed: 12", "")).upper()]
+        split_label = ""
+        for candidate in (
+            row.get("neuron_name", ""),
+            row.get("What is it?", ""),
+            row.get("Unnamed: 9", ""),
+            row.get("Unnamed: 8", ""),
+            row.get("Unnamed: 7", ""),
+            row.get("Unnamed: 6", ""),
+        ):
+            if is_usable_mechano_label(candidate):
+                split_label = clean_text(candidate)
+                break
+        for key in split_keys:
+            if key and re.fullmatch(r"(SS\d+|MB\d+[A-Z]?)", key, re.I) and split_label and key not in split_map:
+                split_map[key] = compact_split_annotation(split_label)
+
+        gal4_key = clean_text(row.get("Bloomington ID", ""))
+        gal4_label = ""
+        for candidate in (
+            row.get("What is it?", ""),
+            row.get("Unnamed: 6", ""),
+            row.get("Unnamed: 7", ""),
+            row.get("From where?", ""),
+            row.get("neuron_name", ""),
+        ):
+            if is_usable_mechano_label(candidate):
+                gal4_label = clean_text(candidate)
+                break
+        if gal4_key and gal4_label and gal4_key not in gal4_map:
+            gal4_map[gal4_key] = gal4_label
+    return split_map, gal4_map
+
+
+def display_label(cond: str, annotation_map: dict[str, str], annotation_only: bool = False, max_chars: int | None = None) -> str:
     ann = annotation_map.get(cond.upper(), "")
     if not ann:
-        return cond
-    return ann if annotation_only else f"{cond} | {ann}"
+        text = cond
+    else:
+        text = ann if annotation_only else f"{cond} | {ann}"
+    return shorten_label(text, max_chars=max_chars) if max_chars is not None else text
+
+
+def shorten_label(text: str, max_chars: int = 24) -> str:
+    text = clean_text(text)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
 
 
 def normalize_sensory_id(value: object) -> str:
@@ -440,6 +542,92 @@ def load_sensory_annotation_map(path_arg: Path | None) -> dict[str, str]:
     return mapping
 
 
+def sensory_group_label(modality: object) -> str:
+    text = clean_text(modality).lower()
+    if not text:
+        return "Other"
+    if any(term in text for term in ("mechano", "proprio", "noci", "respiration", "anterior sensor")):
+        return "Somatosensory"
+    if "thermo" in text:
+        return "Thermosensation"
+    if "vision" in text:
+        return "Vision"
+    if any(term in text for term in ("olfaction", "odorant", "pheromone")):
+        return "Olfaction/Pheromone"
+    if any(term in text for term in ("gustation", "gustatory")):
+        return "Gustation"
+    if any(term in text for term in ("dopamin", "seroton", "octo", "octomin")):
+        return "Neuromodulatory"
+    return clean_text(modality) or "Other"
+
+
+def load_sensory_group_map(path_arg: Path | None) -> dict[str, str]:
+    csv_path = resolve_sensory_stocks_csv(path_arg)
+    if csv_path is None:
+        return {}
+    try:
+        df = pd.read_csv(csv_path, dtype=str, encoding="utf-8-sig")
+    except Exception:
+        return {}
+
+    cols = {str(c).strip().lower(): c for c in df.columns}
+    loc_col = cols.get("stock-location") or cols.get("stock location") or cols.get("stock l.ocation")
+    bloom_col = cols.get("blooming stock")
+    modality_col = cols.get("modality")
+    if modality_col is None:
+        return {}
+
+    mapping: dict[str, str] = {}
+    for _, row in df.iterrows():
+        group = sensory_group_label(row.get(modality_col, ""))
+        key_loc = normalize_sensory_id(row.get(loc_col, "")) if loc_col is not None else ""
+        key_bloom = normalize_sensory_id(row.get(bloom_col, "")) if bloom_col is not None else ""
+        if key_loc and key_loc not in mapping:
+            mapping[key_loc] = group
+        if key_bloom and key_bloom not in mapping:
+            mapping[key_bloom] = group
+    return mapping
+
+
+def reorder_sensory_by_group(order: list[str], ranked: dict, group_map: dict[str, str]) -> list[str]:
+    if not order:
+        return order
+
+    control_name = ranked["control_name"]
+    sig_conditions = ranked["sig_conditions"]
+    effect_by_cond = ranked["effect_by_cond"]
+
+    def is_sig_down(cond: str) -> bool:
+        return cond in sig_conditions and float(effect_by_cond.get(cond, 0.0)) < 0.0
+
+    def is_sig_up(cond: str) -> bool:
+        return cond in sig_conditions and float(effect_by_cond.get(cond, 0.0)) >= 0.0
+
+    def group_block(block: list[str]) -> list[str]:
+        if len(block) <= 1:
+            return block
+        control_idx = next((i for i, cond in enumerate(block) if cond == control_name), None)
+        movable = [cond for cond in block if cond != control_name]
+        grouped: dict[str, list[str]] = {}
+        group_pos: dict[str, list[int]] = {}
+        for idx, cond in enumerate(movable):
+            group = group_map.get(cond.upper(), "Other")
+            grouped.setdefault(group, []).append(cond)
+            group_pos.setdefault(group, []).append(idx)
+        ordered_groups = sorted(grouped, key=lambda group: float(np.mean(group_pos[group])))
+        out: list[str] = []
+        for group in ordered_groups:
+            out.extend(grouped[group])
+        if control_idx is not None:
+            out.insert(min(control_idx, len(out)), control_name)
+        return out
+
+    sig_down = [cond for cond in order if is_sig_down(cond)]
+    nonsig = [cond for cond in order if cond not in sig_conditions]
+    sig_up = [cond for cond in order if is_sig_up(cond)]
+    return group_block(sig_down) + group_block(nonsig) + group_block(sig_up)
+
+
 def write_per_hit_composites(
     df: pd.DataFrame,
     screen: str,
@@ -447,6 +635,8 @@ def write_per_hit_composites(
     condition_col: str,
     control_label: str,
     metric_labels: dict[str, str],
+    title_map: dict[str, str] | None = None,
+    output_suffix: str = "",
 ) -> tuple[int, Path]:
     metric_triplet = ["total_holes", "avg_max_size", "avg_lifetime"]
     metric_cols = [resolve_metric_column(df, m, args.use_residual) for m in metric_triplet]
@@ -523,14 +713,13 @@ def write_per_hit_composites(
         bp = ax.boxplot(
             vals,
             patch_artist=True,
-            widths=0.62,
-            showfliers=True,
+            widths=0.46,
+            showfliers=False,
             whis=args.whis,
             medianprops={"color": "#1a1a1a", "linewidth": 1.2},
             whiskerprops={"color": "#444444", "linewidth": 0.9},
             capprops={"color": "#444444", "linewidth": 0.9},
             boxprops={"edgecolor": "#444444", "linewidth": 0.9},
-            flierprops={"marker": "o", "markersize": 1.8, "markerfacecolor": "#333333", "markeredgecolor": "none", "alpha": 0.25},
         )
         # Color each metric box by that metric's significance + effect direction for this hit.
         for patch, mcol in zip(bp["boxes"], metric_cols):
@@ -538,9 +727,17 @@ def write_per_hit_composites(
             patch.set_facecolor(c)
             patch.set_alpha(0.9)
         ax.axhline(0.0, color="#666666", linestyle="--", linewidth=0.9)
+        finite_vals = np.concatenate([np.asarray(v, dtype=float) for v in vals])
+        finite_vals = finite_vals[np.isfinite(finite_vals)]
+        if finite_vals.size:
+            span = float(np.max(np.abs(finite_vals)))
+            lim = max(0.25, span * 1.08)
+            ax.set_ylim(-lim, lim)
         ax.set_xticks([1, 2, 3])
-        ax.set_xticklabels(labels, rotation=25, ha="right", fontsize=6)
-        ax.set_title(hit, fontsize=9)
+        ax.set_xticklabels(labels, rotation=0, ha="center", fontsize=6)
+        title = title_map.get(hit.upper(), hit) if title_map is not None else hit
+        title = shorten_label(title, max_chars=16)
+        ax.set_title(title, fontsize=9)
         ax.tick_params(axis="y", labelsize=7)
 
     for ax in axes_arr[n:]:
@@ -557,7 +754,7 @@ def write_per_hit_composites(
     trend_slug = ""
     if args.trend_p_threshold is not None:
         trend_slug = f"_trend{str(args.trend_p_threshold).replace('.', 'p')}"
-    out_path = out_dir / f"per_hit_metric_grid_{screen}_all-metrics_source-{source_slug}{trend_slug}.png"
+    out_path = out_dir / f"per_hit_metric_grid_{screen}_all-metrics_source-{source_slug}{output_suffix}{trend_slug}.png"
     fig.savefig(out_path, dpi=180)
     plt.close(fig)
     return n, out_path
@@ -736,19 +933,12 @@ def plot_ranked_boxplot(
         values,
         patch_artist=True,
         widths=0.65,
-        showfliers=True,
+        showfliers=False,
         whis=whis,
         medianprops={"color": "#1a1a1a", "linewidth": 1.5},
         whiskerprops={"color": "#444444", "linewidth": 1.0},
         capprops={"color": "#444444", "linewidth": 1.0},
         boxprops={"edgecolor": "#444444", "linewidth": 1.0},
-        flierprops={
-            "marker": "o",
-            "markersize": 2.5,
-            "markerfacecolor": "#333333",
-            "markeredgecolor": "none",
-            "alpha": 0.4,
-        },
     )
 
     for patch, cond in zip(bp["boxes"], order):
@@ -977,12 +1167,27 @@ def main() -> None:
         if not split_file.exists():
             raise SystemExit(f"Split file not found: {split_file}")
         file_by_screen["split"] = split_file
+    if "mechano-gal4" in screen_order:
+        mechano_gal4_file = discover_dataset_file(data_dir, "mechano-GAL4")
+        if not mechano_gal4_file.exists():
+            raise SystemExit(f"Mechano-GAL4 file not found: {mechano_gal4_file}")
+        file_by_screen["mechano-gal4"] = mechano_gal4_file
+    if "mechano-split" in screen_order:
+        mechano_split_file = discover_dataset_file(data_dir, "mechano-split")
+        if not mechano_split_file.exists():
+            raise SystemExit(f"Mechano-split file not found: {mechano_split_file}")
+        file_by_screen["mechano-split"] = mechano_split_file
 
     metric_col: str | None = None
     df_by_screen: dict[str, pd.DataFrame] = {}
     ranked_by_screen: dict[str, dict] = {}
+    sensory_group_map = load_sensory_group_map(args.sensory_stocks_csv) if args.sensory_group_sort else {}
     for screen in screen_order:
         df = pd.read_csv(file_by_screen[screen])
+        if args.condition_column in df.columns:
+            df[args.condition_column] = df[args.condition_column].astype(str).str.strip()
+            if screen in {"split", "mechano-split"}:
+                df[args.condition_column] = df[args.condition_column].str.upper()
         df_by_screen[screen] = df
         resolved_metric = resolve_metric_column(df, args.metric, args.use_residual)
         if metric_col is None:
@@ -1004,6 +1209,8 @@ def main() -> None:
                 value_scale=args.value_scale,
             )
             sort_order = ranked_sort["order"]
+            if screen in {"sensory", "mechano-gal4"} and args.sensory_group_sort:
+                sort_order = reorder_sensory_by_group(sort_order, ranked_sort, sensory_group_map)
         ranked_by_screen[screen] = build_ranked_data(
             df,
             metric_col=resolved_metric,
@@ -1016,6 +1223,10 @@ def main() -> None:
             value_scale=args.value_scale,
             fixed_order=sort_order,
         )
+        if screen in {"sensory", "mechano-gal4"} and args.sensory_group_sort and sort_order is None:
+            ranked_by_screen[screen]["order"] = reorder_sensory_by_group(
+                ranked_by_screen[screen]["order"], ranked_by_screen[screen], sensory_group_map
+            )
     if metric_col is None:
         raise SystemExit("No screen selected to plot.")
 
@@ -1037,9 +1248,8 @@ def main() -> None:
         output_path = (DEFAULT_OUT_DIR / f"ranked_{plot_kind_slug}plots_{suffix}{screen_suffix}.png").resolve()
 
     split_annotation_map = load_split_annotation_map() if args.split_label_mode == "annotated" else {}
-    sensory_annotation_map = (
-        load_sensory_annotation_map(args.sensory_stocks_csv) if args.sensory_label_mode == "annotated" else {}
-    )
+    sensory_annotation_map = load_sensory_annotation_map(args.sensory_stocks_csv) if args.sensory_label_mode == "annotated" else {}
+    mechano_split_annotation_map, mechano_gal4_annotation_map = load_mechano_annotation_maps()
     if not args.skip_main_plot:
         max_conditions = max(len(ranked_by_screen[s]["order"]) for s in screen_order)
         fig_width = max(MIN_PANEL_WIDTH, max_conditions * WIDTH_PER_CONDITION)
@@ -1053,11 +1263,20 @@ def main() -> None:
             ranked = ranked_by_screen[screen]
             if screen == "split":
                 labels = [display_label(cond, split_annotation_map) for cond in ranked["order"]]
+            elif screen == "mechano-split":
+                labels = [display_label(cond, mechano_split_annotation_map, max_chars=18) for cond in ranked["order"]]
             elif screen == "sensory":
                 labels = [display_label(cond, sensory_annotation_map, annotation_only=True) for cond in ranked["order"]]
+            elif screen == "mechano-gal4":
+                labels = [display_label(cond, mechano_gal4_annotation_map, annotation_only=True, max_chars=18) for cond in ranked["order"]]
             else:
                 labels = ranked["order"]
-            dataset_label = "Sensory inactivation screen" if screen == "sensory" else "Split-GAL4 inactivation screen"
+            dataset_label = {
+                "sensory": "Sensory inactivation screen",
+                "split": "Split-GAL4 inactivation screen",
+                "mechano-gal4": "Mechano GAL4 inactivation screen",
+                "mechano-split": "Mechano split-GAL4 inactivation screen",
+            }.get(screen, screen)
             y_label = y_axis_label(metric_col, args.value_scale)
             if args.plot_kind == "bar":
                 plot_ranked_barplot(ax, ranked, dataset_label, y_label, args.alpha, args.ci_level, labels, args.trend_p_threshold)
@@ -1073,8 +1292,10 @@ def main() -> None:
         fig.savefig(output_path, dpi=180)
         plt.close(fig)
 
-    print(f"Sensory file: {file_by_screen.get('sensory', 'not used')}")
-    print(f"Split file:   {file_by_screen.get('split', 'not used')}")
+    print(f"Sensory file:      {file_by_screen.get('sensory', 'not used')}")
+    print(f"Split file:        {file_by_screen.get('split', 'not used')}")
+    print(f"Mechano GAL4 file: {file_by_screen.get('mechano-gal4', 'not used')}")
+    print(f"Mechano split file:{file_by_screen.get('mechano-split', 'not used')}")
     print(f"Screen:       {args.screen}")
     print(f"Metric:       {metric_col}")
     print(f"Plot kind:    {args.plot_kind}")
@@ -1163,6 +1384,16 @@ def main() -> None:
                 nonsig = [c for c in sorted_conds if c not in sig_union]
                 sig_up = [c for c in sorted_conds if c in sig_union and score_by_cond[c] >= 0]
                 shared_order = sig_down + nonsig + sig_up
+            if screen in {"sensory", "mechano-gal4"} and args.sensory_group_sort:
+                shared_order = reorder_sensory_by_group(
+                    shared_order,
+                    {
+                        "control_name": control_name,
+                        "sig_conditions": sig_union,
+                        "effect_by_cond": score_by_cond,
+                    },
+                    sensory_group_map,
+                )
         else:
             ranked_sort = next((r for m, r in metric_ranked_for_sort if m == sort_metric_col), None)
             if ranked_sort is None:
@@ -1179,6 +1410,8 @@ def main() -> None:
                     allowed_conditions=common_conditions,
                 )
             shared_order = ranked_sort["order"]
+            if screen in {"sensory", "mechano-gal4"} and args.sensory_group_sort:
+                shared_order = reorder_sensory_by_group(shared_order, ranked_sort, sensory_group_map)
 
         ranked_metrics: list[tuple[str, dict]] = []
         for mcol in residual_metrics:
@@ -1199,7 +1432,12 @@ def main() -> None:
 
         sort_slug = "composite" if sort_metric_col == "composite" else sort_metric_col.replace("_residual", "")
         screen_slug = screen
-        panel_title = "Sensory inactivation screen" if screen == "sensory" else "Split-GAL4 inactivation screen"
+        panel_title = {
+            "sensory": "Sensory inactivation screen",
+            "split": "Split-GAL4 inactivation screen",
+            "mechano-gal4": "Mechano GAL4 inactivation screen",
+            "mechano-split": "Mechano split-GAL4 inactivation screen",
+        }.get(screen, screen)
 
         if args.composite_residuals:
             comp_fig_width = max(MIN_PANEL_WIDTH, len(shared_order) * WIDTH_PER_CONDITION)
@@ -1214,8 +1452,12 @@ def main() -> None:
                 subplot_title = metric_pretty_name(mcol)
                 if screen == "split":
                     labels = [display_label(cond, split_annotation_map) for cond in ranked_m["order"]]
+                elif screen == "mechano-split":
+                    labels = [display_label(cond, mechano_split_annotation_map) for cond in ranked_m["order"]]
                 elif screen == "sensory":
                     labels = [display_label(cond, sensory_annotation_map, annotation_only=True) for cond in ranked_m["order"]]
+                elif screen == "mechano-gal4":
+                    labels = [display_label(cond, mechano_gal4_annotation_map, annotation_only=True) for cond in ranked_m["order"]]
                 else:
                     labels = ranked_m["order"]
                 if args.plot_kind == "bar":
@@ -1251,8 +1493,8 @@ def main() -> None:
             )
             mat_plot = np.clip(mat, -1.5, 1.5)
             cmap = residual_heatmap_cmap()
-            hm_width = max(MIN_PANEL_WIDTH, len(shared_order) * WIDTH_PER_CONDITION)
-            hm_height = max(2.2, 0.48 * len(ranked_metrics) + 0.8)
+            hm_width = max(MIN_PANEL_WIDTH, 3.2 + len(shared_order) * 0.16)
+            hm_height = max(3.1, 2.2 + len(ranked_metrics) * 0.34)
 
             fig_h, ax_h = plt.subplots(
                 figsize=(hm_width, hm_height),
@@ -1264,8 +1506,12 @@ def main() -> None:
             ax_h.set_xticks(np.arange(len(shared_order)))
             if screen == "split":
                 hm_labels = [display_label(cond, split_annotation_map) for cond in shared_order]
+            elif screen == "mechano-split":
+                hm_labels = [display_label(cond, mechano_split_annotation_map) for cond in shared_order]
             elif screen == "sensory":
                 hm_labels = [display_label(cond, sensory_annotation_map, annotation_only=True) for cond in shared_order]
+            elif screen == "mechano-gal4":
+                hm_labels = [display_label(cond, mechano_gal4_annotation_map, annotation_only=True) for cond in shared_order]
             else:
                 hm_labels = shared_order
             ax_h.set_xticklabels(hm_labels, rotation=62, ha="right", fontsize=7)
@@ -1293,10 +1539,23 @@ def main() -> None:
             raise SystemExit("--per-hit-composites requires --screen sensory or --screen split (single screen).")
         screen = screen_order[0]
         metric_labels = {
-            resolve_metric_column(df_by_screen[screen], "total_holes", args.use_residual): "Number of Holes",
-            resolve_metric_column(df_by_screen[screen], "avg_max_size", args.use_residual): "Hole Size",
+            resolve_metric_column(df_by_screen[screen], "total_holes", args.use_residual): "Hole\ncount",
+            resolve_metric_column(df_by_screen[screen], "avg_max_size", args.use_residual): "Hole\nsize",
             resolve_metric_column(df_by_screen[screen], "avg_lifetime", args.use_residual): "Lifetime",
         }
+        title_map = None
+        output_suffix = ""
+        if screen == "sensory":
+            title_map = sensory_annotation_map
+        elif screen == "mechano-gal4":
+            title_map = mechano_gal4_annotation_map
+        elif screen == "split" and args.split_label_mode == "annotated":
+            title_map = split_annotation_map
+            output_suffix = "_annotated"
+        elif screen == "mechano-split" and args.split_label_mode == "annotated":
+            title_map = mechano_split_annotation_map
+            output_suffix = "_annotated"
+
         n_written, out_path = write_per_hit_composites(
             df=df_by_screen[screen],
             screen=screen,
@@ -1304,6 +1563,8 @@ def main() -> None:
             condition_col=args.condition_column,
             control_label=args.control_label,
             metric_labels=metric_labels,
+            title_map=title_map,
+            output_suffix=output_suffix,
         )
         print(f"Per-hit source: {resolve_metric_column(df_by_screen[screen], args.per_hit_source_metric, args.use_residual)}")
         print(f"Per-hit count:  {n_written}")
